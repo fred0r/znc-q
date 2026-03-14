@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2019 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2026 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,17 +18,53 @@
 #include <znc/IRCNetwork.h>
 #include <znc/IRCSock.h>
 #include <znc/Chan.h>
+#include <znc/Modules.h>
 
-using std::set;
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/sha.h>
+
+#include <array>
+#include <cstdint>
 
 #ifndef Q_DEBUG_COMMUNICATION
 #define Q_DEBUG_COMMUNICATION 0
 #endif
 
-class CQModule : public CModule {
+namespace {
+constexpr std::array kQHost{"CServe.quakenet.org"};
+constexpr std::array kQService{"PRIVMSG Q@CServe.quakenet.org :"};
+constexpr int kAuthRetryInterval = 30;
+constexpr int kBlockSize = 64;
+}  // namespace
+
+class CQModule;
+
+class CAuthTimer final : public CTimer {
+  public:
+    explicit CAuthTimer(CModule* pModule)
+        : CTimer(pModule, kAuthRetryInterval, 0, "AuthRetryTimer",
+                 "Retries authentication until successful") {}
+
+  protected:
+    void RunJob() override;
+
+  public:
+    CAuthTimer(const CAuthTimer&) = delete;
+    CAuthTimer& operator=(const CAuthTimer&) = delete;
+};
+
+class CQModule final : public CModule {
   public:
     MODCONSTRUCTOR(CQModule) {}
     ~CQModule() override {}
+
+    CQModule(const CQModule&) = delete;
+    CQModule(CQModule&&) = delete;
+    CQModule& operator=(const CQModule&) = delete;
+    CQModule& operator=(CQModule&&) = delete;
+
+    friend class CAuthTimer;
 
     bool OnLoad(const CString& sArgs, CString& sMessage) override {
         if (!sArgs.empty()) {
@@ -59,11 +95,12 @@ class CQModule : public CModule {
 
         OnIRCDisconnected();  // reset module's state
 
-        if (IsIRCConnected()) {
-            // check for usermode +x if we are already connected
-            set<char> scUserModes =
-                GetNetwork()->GetIRCSock()->GetUserModes();
-            if (scUserModes.find('x') != scUserModes.end()) m_bCloaked = true;
+            if (IsIRCConnected()) {
+                const auto* pIRCSock = GetNetwork()->GetIRCSock();
+                if (pIRCSock) {
+                    const auto& scUserModes = pIRCSock->GetUserModes();
+                    if (scUserModes.find('x') != scUserModes.end()) m_bCloaked = true;
+                }
 
             // This will only happen once, and only if the user loads the module
             // after connecting to IRC.
@@ -97,9 +134,11 @@ class CQModule : public CModule {
         m_bRequestedWhoami = false;
         m_bRequestedChallenge = false;
         m_bCatchResponse = false;
+        StopAuthTimer();
     }
 
     void OnIRCConnected() override {
+        StartAuthTimer();
         if (m_bUseCloakedHost) Cloak();
         WhoAmI();
     }
@@ -252,7 +291,7 @@ class CQModule : public CModule {
         } else if (sCommand == "status") {
             PutModule(IsIRCConnected() ? t_s("Connected: yes")
                                        : t_s("Connected: no"));
-            PutModule(m_bCloaked ? t_s("Cloacked: yes") : t_s("Cloacked: no"));
+            PutModule(m_bCloaked ? t_s("Cloaked: yes") : t_s("Cloaked: no"));
             PutModule(m_bAuthed ? t_s("Authenticated: yes")
                                 : t_s("Authenticated: no"));
 
@@ -310,9 +349,10 @@ class CQModule : public CModule {
     }
 
     EModRet OnJoining(CChan& Channel) override {
-        // Halt if are not already cloaked, but the user requres that we delay
-        // channel join till after we are cloaked.
-        if (!m_bCloaked && m_bUseCloakedHost && m_bJoinAfterCloaked)
+        if (!m_bAuthed)
+            return HALT;
+
+        if (!m_bCloaked)
             return HALT;
 
         return CONTINUE;
@@ -338,7 +378,7 @@ class CQModule : public CModule {
         if (!Nick.NickEquals("Q") ||
             !Nick.GetHost().Equals("CServe.quakenet.org"))
             return CONTINUE;
-        if (m_bJoinOnInvite) GetNetwork()->AddChan(sChan, false);
+        if (m_bJoinOnInvite && m_bAuthed && m_bCloaked) GetNetwork()->AddChan(sChan, false);
         return CONTINUE;
     }
 
@@ -421,6 +461,29 @@ class CQModule : public CModule {
     bool m_bRequestedChallenge{};
     bool m_bCatchResponse{};
     MCString m_msChanModes;
+    CTimer* m_pAuthTimer{};
+
+    void StartAuthTimer() {
+        if (!m_sUsername.empty() && !m_sPassword.empty() && !m_bAuthed) {
+            RemTimer("AuthRetryTimer");
+            m_pAuthTimer = new CAuthTimer(this);
+            AddTimer(m_pAuthTimer);
+        }
+    }
+
+    void StopAuthTimer() {
+        RemTimer("AuthRetryTimer");
+        m_pAuthTimer = nullptr;
+    }
+
+    void RetryAuth() {
+        if (!m_bAuthed && IsIRCConnected()) {
+            PutModule(t_s("Auth: Retrying authentication..."));
+            Auth();
+        } else {
+            StopAuthTimer();
+        }
+    }
 
     void PutQ(const CString& sMessage) {
         PutIRC("PRIVMSG Q@CServe.quakenet.org :" + sMessage);
@@ -500,6 +563,7 @@ class CQModule : public CModule {
             m_bCatchResponse = m_bRequestedWhoami;
         } else if (sMessage.find("Information for user") != CString::npos) {
             m_bAuthed = true;
+            StopAuthTimer();
             m_msChanModes.clear();
             m_bCatchResponse = m_bRequestedWhoami;
             m_bRequestedWhoami = true;
@@ -522,6 +586,7 @@ class CQModule : public CModule {
             return HALT;
         } else if (sMessage.WildCmp("You are now logged in as *.")) {
             m_bAuthed = true;
+            StopAuthTimer();
             PutModule(t_f("Authentication successful: {1}")(sMessage));
             WhoAmI();
             return HALT;
@@ -531,6 +596,7 @@ class CQModule : public CModule {
             if (sMessage.find("not available once you have authed") !=
                 CString::npos) {
                 m_bAuthed = true;
+                StopAuthTimer();
             } else {
                 if (sMessage.find("HMAC-SHA-256") != CString::npos) {
                     ChallengeAuth(sMessage.Token(1));
@@ -595,40 +661,22 @@ class CQModule : public CModule {
         return Nick.NickEquals(GetNetwork()->GetCurNick());
     }
 
-    bool PackHex(const CString& sHex, CString& sPackedHex) {
-        if (sHex.length() % 2) return false;
-
-        sPackedHex.clear();
-
-        CString::size_type len = sHex.length() / 2;
-        for (CString::size_type i = 0; i < len; i++) {
-            unsigned int value;
-            int n = sscanf(&sHex[i * 2], "%02x", &value);
-            if (n != 1 || value > 0xff) return false;
-            sPackedHex += (unsigned char)value;
-        }
-
-        return true;
-    }
-
     CString HMAC_SHA256(const CString& sKey, const CString& sData) {
-        CString sRealKey;
-        if (sKey.length() > 64)
-            PackHex(sKey.SHA256(), sRealKey);
-        else
-            sRealKey = sKey;
+        unsigned char uResult[SHA256_DIGEST_LENGTH];
+        unsigned int uResultLen = SHA256_DIGEST_LENGTH;
 
-        CString sOuterKey, sInnerKey;
-        CString::size_type iKeyLength = sRealKey.length();
-        for (unsigned int i = 0; i < 64; i++) {
-            char r = (i < iKeyLength ? sRealKey[i] : '\0');
-            sOuterKey += r ^ 0x5c;
-            sInnerKey += r ^ 0x36;
+        HMAC(EVP_sha256(), sKey.data(), static_cast<int>(sKey.length()),
+             reinterpret_cast<const unsigned char*>(sData.data()),
+             sData.length(), uResult, &uResultLen);
+
+        CString sHex;
+        sHex.reserve(SHA256_DIGEST_LENGTH * 2);
+        for (unsigned int i = 0; i < uResultLen; i++) {
+            char buf[3];
+            snprintf(buf, sizeof(buf), "%02x", uResult[i]);
+            sHex += buf;
         }
-
-        CString sInnerHash;
-        PackHex(CString(sInnerKey + sData).SHA256(), sInnerHash);
-        return CString(sOuterKey + sInnerHash).SHA256();
+        return sHex;
     }
 
     /* Settings */
@@ -687,3 +735,8 @@ void TModInfo<CQModule>(CModInfo& Info) {
 }
 
 NETWORKMODULEDEFS(CQModule, t_s("Auths you with QuakeNet's Q bot."))
+
+void CAuthTimer::RunJob() {
+    auto* pQModule = dynamic_cast<CQModule*>(GetModule());
+    if (pQModule) pQModule->RetryAuth();
+}
