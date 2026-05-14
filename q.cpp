@@ -313,6 +313,7 @@ class CQModule final : public CModule {
 
     void StartRetryTimer() {
         RemTimer("RetryTimer");
+        delete m_pRetryTimer;
         m_pRetryTimer = nullptr;
         if (m_bQModuleEnabled && IsQuakeNet() &&
             !m_sUsername.empty() && !m_sPassword.empty() &&
@@ -325,6 +326,7 @@ class CQModule final : public CModule {
 
     void StopRetryTimer() {
         RemTimer("RetryTimer");
+        delete m_pRetryTimer;
         m_pRetryTimer = nullptr;
     }
 
