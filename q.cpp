@@ -240,27 +240,38 @@ class CQModule final : public CModule {
 
             Tmpl["Username"] = m_sUsername;
 
-            AddWebOption(Tmpl, "usecloakedhost", "UseCloakedHost",
-                         t_s("Whether to cloak your hostname (+x) "
-                             "automatically on connect."),
-                         m_bUseCloakedHost);
-            AddWebOption(Tmpl, "usechallenge", "UseChallenge",
-                         t_s("Whether to use the CHALLENGEAUTH "
-                             "mechanism to avoid sending passwords in "
-                             "cleartext."),
-                         m_bUseChallenge);
-            AddWebOption(Tmpl, "requestperms", "RequestPerms",
-                         t_s("Whether to request voice/op from Q on "
-                             "join/devoice/deop."),
-                         m_bRequestPerms);
-            AddWebOption(Tmpl, "joinoninvite", "JoinOnInvite",
-                         t_s("Whether to join channels when Q invites "
-                             "you."),
-                         m_bJoinOnInvite);
-            AddWebOption(Tmpl, "joinaftercloaked", "JoinAfterCloaked",
-                         t_s("Whether to delay joining channels until "
-                             "after you are cloaked."),
-                         m_bJoinAfterCloaked);
+            struct WebOpt {
+                CString sName;
+                CString sDisplay;
+                CString sTooltip;
+                bool bValue;
+            };
+            for (const auto& opt : {
+                     WebOpt{"usecloakedhost", "UseCloakedHost",
+                            t_s("Whether to cloak your hostname (+x) "
+                                "automatically on connect."),
+                            m_bUseCloakedHost},
+                     WebOpt{"usechallenge", "UseChallenge",
+                            t_s("Whether to use the CHALLENGEAUTH "
+                                "mechanism to avoid sending passwords "
+                                "in cleartext."),
+                            m_bUseChallenge},
+                     WebOpt{"requestperms", "RequestPerms",
+                            t_s("Whether to request voice/op from Q "
+                                "on join/devoice/deop."),
+                            m_bRequestPerms},
+                     WebOpt{"joinoninvite", "JoinOnInvite",
+                            t_s("Whether to join channels when Q "
+                                "invites you."),
+                            m_bJoinOnInvite},
+                     WebOpt{"joinaftercloaked", "JoinAfterCloaked",
+                            t_s("Whether to delay joining channels "
+                                "until after you are cloaked."),
+                            m_bJoinAfterCloaked},
+                 }) {
+                AddWebOption(Tmpl, opt.sName, opt.sDisplay,
+                             opt.sTooltip, opt.bValue);
+            }
 
             if (bSubmitted) {
                 WebSock.GetSession()->AddSuccess(
@@ -291,6 +302,13 @@ class CQModule final : public CModule {
         if (m_bUseCloakedHost && m_bJoinAfterCloaked && !m_bCloaked) return;
         m_ssDeferredChannels.clear();
         GetNetwork()->JoinChans();
+    }
+
+    void AfterAuthOrCloakSuccess() {
+        if (m_bUseCloakedHost && !m_bCloaked)
+            Cloak();
+        if (m_bCloaked && m_bJoinAfterCloaked)
+            TryJoinDeferred();
     }
 
     void StartRetryTimer() {
@@ -548,6 +566,17 @@ class CQModule final : public CModule {
         return CString(sOuterKey + sInnerHash).SHA256();
     }
 
+    bool LoadBoolSetting(const CString& sKey, bool bDefault) const {
+        CString sVal = GetNV(sKey);
+        return sVal.empty() ? bDefault : sVal.ToBool();
+    }
+
+    unsigned int LoadUIntSetting(const CString& sKey,
+                                 unsigned int uDefault) const {
+        CString sVal = GetNV(sKey);
+        return sVal.empty() ? uDefault : sVal.ToUInt();
+    }
+
     void LoadSettings(const CString& sArgs) {
         if (!sArgs.empty()) {
             SetUsername(sArgs.Token(0));
@@ -557,32 +586,15 @@ class CQModule final : public CModule {
             m_sPassword = LoadPassword();
         }
 
-        CString sTmp;
-        m_bUseCloakedHost =
-            (sTmp = GetNV("UseCloakedHost")).empty()
-                ? true
-                : sTmp.ToBool();
-        m_bUseChallenge =
-            (sTmp = GetNV("UseChallenge")).empty()
-                ? true
-                : sTmp.ToBool();
-        m_bRequestPerms = GetNV("RequestPerms").ToBool();
-        m_bJoinOnInvite =
-            (sTmp = GetNV("JoinOnInvite")).empty()
-                ? true
-                : sTmp.ToBool();
+        m_bUseCloakedHost = LoadBoolSetting("UseCloakedHost", true);
+        m_bUseChallenge = LoadBoolSetting("UseChallenge", true);
+        m_bRequestPerms = LoadBoolSetting("RequestPerms", false);
+        m_bJoinOnInvite = LoadBoolSetting("JoinOnInvite", true);
         m_bJoinAfterCloaked =
-            (sTmp = GetNV("JoinAfterCloaked")).empty()
-                ? true
-                : sTmp.ToBool();
-        m_bQModuleEnabled =
-            (sTmp = GetNV("QModuleEnabled")).empty()
-                ? true
-                : sTmp.ToBool();
+            LoadBoolSetting("JoinAfterCloaked", true);
+        m_bQModuleEnabled = LoadBoolSetting("QModuleEnabled", true);
         m_uRetryInterval =
-            (sTmp = GetNV("RetryInterval")).empty()
-                ? kDefaultRetryInterval
-                : sTmp.ToUInt();
+            LoadUIntSetting("RetryInterval", kDefaultRetryInterval);
 
         SetUseChallenge(m_bUseChallenge);
         SetRequestPerms(m_bRequestPerms);
@@ -626,33 +638,25 @@ class CQModule final : public CModule {
         CTable Table;
         Table.AddColumn(t_s("Setting"));
         Table.AddColumn(t_s("Value"));
-        Table.AddRow();
-        Table.SetCell(t_s("Setting"), "Enabled");
-        Table.SetCell(t_s("Value"), CString(m_bQModuleEnabled));
-        Table.AddRow();
-        Table.SetCell(t_s("Setting"), "Username");
-        Table.SetCell(t_s("Value"), m_sUsername);
-        Table.AddRow();
-        Table.SetCell(t_s("Setting"), "Password");
-        Table.SetCell(t_s("Value"), "*****");
-        Table.AddRow();
-        Table.SetCell(t_s("Setting"), "UseCloakedHost");
-        Table.SetCell(t_s("Value"), CString(m_bUseCloakedHost));
-        Table.AddRow();
-        Table.SetCell(t_s("Setting"), "UseChallenge");
-        Table.SetCell(t_s("Value"), CString(m_bUseChallenge));
-        Table.AddRow();
-        Table.SetCell(t_s("Setting"), "RequestPerms");
-        Table.SetCell(t_s("Value"), CString(m_bRequestPerms));
-        Table.AddRow();
-        Table.SetCell(t_s("Setting"), "JoinOnInvite");
-        Table.SetCell(t_s("Value"), CString(m_bJoinOnInvite));
-        Table.AddRow();
-        Table.SetCell(t_s("Setting"), "JoinAfterCloaked");
-        Table.SetCell(t_s("Value"), CString(m_bJoinAfterCloaked));
-        Table.AddRow();
-        Table.SetCell(t_s("Setting"), "RetryInterval (seconds)");
-        Table.SetCell(t_s("Value"), CString(m_uRetryInterval));
+
+        struct Row { CString sSetting; CString sValue; };
+        for (const auto& row : {
+                 Row{t_s("Enabled"), CString(m_bQModuleEnabled)},
+                 Row{t_s("Username"), m_sUsername},
+                 Row{t_s("Password"), CString("*****")},
+                 Row{t_s("UseCloakedHost"), CString(m_bUseCloakedHost)},
+                 Row{t_s("UseChallenge"), CString(m_bUseChallenge)},
+                 Row{t_s("RequestPerms"), CString(m_bRequestPerms)},
+                 Row{t_s("JoinOnInvite"), CString(m_bJoinOnInvite)},
+                 Row{t_s("JoinAfterCloaked"),
+                     CString(m_bJoinAfterCloaked)},
+                 Row{t_s("RetryInterval (seconds)"),
+                     CString(m_uRetryInterval)},
+             }) {
+            Table.AddRow();
+            Table.SetCell(t_s("Setting"), row.sSetting);
+            Table.SetCell(t_s("Value"), row.sValue);
+        }
         PutModule(Table);
     }
 
@@ -723,10 +727,7 @@ class CQModule final : public CModule {
         m_msChanModes.clear();
         m_bCatchResponse = m_bRequestedWhoami;
         m_bRequestedWhoami = true;
-        if (m_bUseCloakedHost && !m_bCloaked)
-            Cloak();
-        if (m_bCloaked && m_bJoinAfterCloaked)
-            TryJoinDeferred();
+        AfterAuthOrCloakSuccess();
     }
 
     void HandleWhoamiChannel(const CString& sMessage) {
@@ -755,10 +756,7 @@ class CQModule final : public CModule {
         PutModule(
             t_f("Authentication successful: {1}")(sMessage));
         WhoAmI();
-        if (m_bUseCloakedHost && !m_bCloaked)
-            Cloak();
-        if (m_bCloaked && m_bJoinAfterCloaked)
-            TryJoinDeferred();
+        AfterAuthOrCloakSuccess();
         return HALT;
     }
 
@@ -772,10 +770,7 @@ class CQModule final : public CModule {
             CString::npos) {
             m_bAuthed = true;
             m_bAuthPending = false;
-            if (m_bUseCloakedHost && !m_bCloaked)
-                Cloak();
-            if (m_bCloaked && m_bJoinAfterCloaked)
-                TryJoinDeferred();
+            AfterAuthOrCloakSuccess();
         } else if (sMessage.find("HMAC-SHA-256") !=
                    CString::npos) {
             ChallengeAuth(sMessage.Token(1));
