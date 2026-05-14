@@ -294,11 +294,12 @@ class CQModule final : public CModule {
     }
 
     void StartRetryTimer() {
+        RemTimer("RetryTimer");
+        m_pRetryTimer = nullptr;
         if (m_bQModuleEnabled && IsQuakeNet() &&
             !m_sUsername.empty() && !m_sPassword.empty() &&
             (!m_bAuthed ||
              (m_bUseCloakedHost && !m_bCloaked))) {
-            RemTimer("RetryTimer");
             m_pRetryTimer = new CRetryTimer(this, m_uRetryInterval);
             AddTimer(m_pRetryTimer);
         }
@@ -358,9 +359,12 @@ class CQModule final : public CModule {
     void Cloak() {
         if (m_bCloaked) return;
 
+        CIRCSock* pIRCSock = GetNetwork()->GetIRCSock();
+        if (!pIRCSock) return;
+
         PutModule(
             t_s("Cloak: Trying to cloak your hostname, setting +x..."));
-        PutIRC("MODE " + GetNetwork()->GetIRCSock()->GetNick() + " +x");
+        PutIRC("MODE " + pIRCSock->GetNick() + " +x");
     }
 
     void WhoAmI() {
@@ -794,7 +798,7 @@ class CQModule final : public CModule {
     bool m_bJoinAfterCloaked{};
 
     CString GetEncryptionKey() const {
-        return CBlowfish::MD5(GetUser()->GetUsername() + ":" + GetUser()->GetPass());
+        return CBlowfish::MD5(GetUser()->GetUsername() + ":" + GetSavePath());
     }
 
     CString EncryptPassword(const CString& sPlaintext) const {
