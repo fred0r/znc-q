@@ -550,7 +550,7 @@ class CQModule final : public CModule {
             SetPassword(sArgs.Token(1));
         } else {
             m_sUsername = GetNV("Username");
-            m_sPassword = GetNV("Password");
+            m_sPassword = LoadPassword();
         }
 
         CString sTmp;
@@ -793,6 +793,39 @@ class CQModule final : public CModule {
     bool m_bJoinOnInvite{};
     bool m_bJoinAfterCloaked{};
 
+    CString GetEncryptionKey() const {
+        return CBlowfish::MD5(GetUser()->GetUsername() + ":" + GetUser()->GetPass());
+    }
+
+    CString EncryptPassword(const CString& sPlaintext) const {
+        CBlowfish c(GetEncryptionKey(), BF_ENCRYPT);
+        return c.Crypt(sPlaintext);
+    }
+
+    CString DecryptPassword(const CString& sCiphertext) const {
+        CBlowfish c(GetEncryptionKey(), BF_DECRYPT);
+        return c.Crypt(sCiphertext);
+    }
+
+    CString LoadPassword() {
+        CString sPassword = GetNV("PasswordEnc");
+        if (!sPassword.empty()) {
+            return DecryptPassword(sPassword);
+        }
+        sPassword = GetNV("Password");
+        if (!sPassword.empty()) {
+            PutModule(t_s("Upgraded Q password to encrypted on-disk storage."));
+            SetNV("PasswordEnc", EncryptPassword(sPassword));
+            DelNV("Password");
+        }
+        return sPassword;
+    }
+
+    void SavePassword(const CString& sPlaintext) {
+        SetNV("PasswordEnc", EncryptPassword(sPlaintext));
+        DelNV("Password");
+    }
+
     void SetUsername(const CString& sUsername) {
         m_sUsername = sUsername;
         SetNV("Username", sUsername);
@@ -800,7 +833,7 @@ class CQModule final : public CModule {
 
     void SetPassword(const CString& sPassword) {
         m_sPassword = sPassword;
-        SetNV("Password", sPassword);
+        SavePassword(sPassword);
     }
 
     void SetUseCloakedHost(const bool bUseCloakedHost) {
