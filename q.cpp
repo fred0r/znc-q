@@ -145,8 +145,6 @@ class CQModule final : public CModule {
     void OnIRCConnected() override {
         if (m_bQModuleEnabled && IsQuakeNet()) {
             StartRetryTimer();
-            if (m_bUseCloakedHost) Cloak();
-            WhoAmI();
         }
     }
 
