@@ -119,10 +119,10 @@ class CQModule final : public CModule {
                     SetUseCloakedHost(m_bUseCloakedHost);
                     m_bJoinAfterCloaked = true;
                     SetJoinAfterCloaked(m_bJoinAfterCloaked);
-                } else if (m_bQModuleEnabled && m_bUseChallenge) {
-                    Cloak();
                 }
-                WhoAmI();
+                if (m_bQModuleEnabled) {
+                    StartRetryTimer();
+                }
             }
         } else {
             SetUseCloakedHost(m_bUseCloakedHost);
@@ -357,9 +357,11 @@ class CQModule final : public CModule {
 
     void RetryAll() {
         if (IsIRCConnected() && IsQuakeNet()) {
-            if (!m_bAuthed && !m_bAuthPending) {
-                PutModule(t_s("Auth: Retrying authentication..."));
-                Auth();
+            if (!m_bAuthed) {
+                if (!m_bAuthPending) {
+                    PutModule(t_s("Auth: Retrying authentication..."));
+                    Auth();
+                }
             } else if (m_bUseCloakedHost && !m_bCloaked) {
                 PutModule(t_s("Cloak: Retrying..."));
                 Cloak();
@@ -892,5 +894,5 @@ NETWORKMODULEDEFS(CQModule, t_s("Auths you with QuakeNet's Q bot."))
 
 void CRetryTimer::RunJob() {
     auto* pQModule = dynamic_cast<CQModule*>(GetModule());
-    if (pQModule) pQModule->RetryAll();
+    if (pQModule && pQModule->GetNetwork()) pQModule->RetryAll();
 }
