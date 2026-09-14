@@ -6,8 +6,5 @@ This repository contains the q module as it was [previously contained the ZNC re
 
 ## Installation
 
-### AUR package
-Install the [znc-q-git](https://aur.archlinux.org/packages/znc-q-git) AUR package.
-
 ### Compiling
 This is described here: https://wiki.znc.in/Compiling_modules.
